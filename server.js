@@ -45,11 +45,10 @@ async function ensureDefaultBank() {
   return bank;
 }
 
-ensureDefaultBank();
-
 // Routes
 app.get("/banks", async (req, res) => {
   try {
+    await ensureDefaultBank();
     const banks = await Bank.find();
     res.json(banks);
   } catch (err) {
@@ -77,6 +76,7 @@ app.delete("/banks/:id", async (req, res) => {
 
 // Transactions
 app.get("/transactions", async (req, res) => {
+  await ensureDefaultBank();
   const transactions = await Transaction.find().populate("bankId", "name");
   res.json(transactions);
 });
