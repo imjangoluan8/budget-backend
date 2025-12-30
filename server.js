@@ -18,6 +18,7 @@ app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 const bankSchema = new mongoose.Schema({
   name: String,
   balance: Number,
+  budgetCode: { type: String, required: true },
 });
 const Bank = mongoose.model("Bank", bankSchema);
 
@@ -29,24 +30,36 @@ const transactionSchema = new mongoose.Schema({
   sourceName: String,
   destName: String,
   isLedger: { type: Boolean, default: false }, // for non-primary banks
+  budgetCode: { type: String, required: true },
 });
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
 // Ensure default bank
-async function ensureDefaultBank() {
-  let bank = await Bank.findOne({ name: "Payroll Bank(RBANK)" });
+async function ensureDefaultBank(code) {
+  let bank = await Bank.findOne({
+    name: "Payroll Bank(RBANK)",
+    budgetCode: code,
+  });
   if (!bank) {
-    bank = new Bank({ name: "Payroll Bank(RBANK)", balance: 0 });
+    bank = new Bank({
+      name: "Payroll Bank(RBANK)",
+      balance: 0,
+      budgetCode: code,
+    });
     await bank.save();
-    console.log("Default primary bank created.");
-  } else {
-    console.log("Default primary bank already exists.");
   }
   return bank;
 }
 
+function budgetCodeMiddleware(req, res, next) {
+  const code = req.headers["x-budget-code"];
+  if (!code) return res.status(400).send("Budget code required");
+  req.budgetCode = code;
+  next();
+}
+
 // Routes
-app.get("/banks", async (req, res) => {
+app.get("/banks", budgetCodeMiddleware, async (req, res) => {
   try {
     await ensureDefaultBank();
     const banks = await Bank.find();
@@ -57,7 +70,7 @@ app.get("/banks", async (req, res) => {
   }
 });
 
-app.post("/banks", async (req, res) => {
+app.post("/banks", budgetCodeMiddleware, async (req, res) => {
   const { name, balance } = req.body;
   if (name === "Payroll Bank(RBANK)")
     return res.status(400).send("Default bank already exists");
@@ -66,7 +79,7 @@ app.post("/banks", async (req, res) => {
   res.json(bank);
 });
 
-app.delete("/banks/:id", async (req, res) => {
+app.delete("/banks/:id", budgetCodeMiddleware, async (req, res) => {
   const bank = await Bank.findById(req.params.id);
   if (bank.name === "Payroll Bank(RBANK)")
     return res.status(400).send("Cannot delete default bank");
@@ -75,13 +88,13 @@ app.delete("/banks/:id", async (req, res) => {
 });
 
 // Transactions
-app.get("/transactions", async (req, res) => {
+app.get("/transactions", budgetCodeMiddleware, async (req, res) => {
   await ensureDefaultBank();
   const transactions = await Transaction.find().populate("bankId", "name");
   res.json(transactions);
 });
 
-app.post("/transactions", async (req, res) => {
+app.post("/transactions", budgetCodeMiddleware, async (req, res) => {
   const { type, amount, month, bankId, isLedger, sourceName, destName } =
     req.body;
 
@@ -108,7 +121,7 @@ app.post("/transactions", async (req, res) => {
   res.json(transaction);
 });
 
-app.delete("/transactions/:id", async (req, res) => {
+app.delete("/transactions/:id", budgetCodeMiddleware, async (req, res) => {
   const transaction = await Transaction.findById(req.params.id);
   if (!transaction) return res.status(404).send("Not found");
 
@@ -122,7 +135,7 @@ app.delete("/transactions/:id", async (req, res) => {
 });
 
 // Monthly summary
-app.get("/summary", async (req, res) => {
+app.get("/summary", budgetCodeMiddleware, async (req, res) => {
   const transactions = await Transaction.find();
   const summaryMap = {};
 
@@ -145,7 +158,7 @@ app.get("/summary", async (req, res) => {
   res.json(summary);
 });
 
-app.patch("/banks/:id", async (req, res) => {
+app.patch("/banks/:id", budgetCodeMiddleware, async (req, res) => {
   const { balance } = req.body;
   const bank = await Bank.findById(req.params.id);
   if (!bank) return res.status(404).send("Bank not found");
@@ -154,7 +167,7 @@ app.patch("/banks/:id", async (req, res) => {
   res.json(bank);
 });
 
-app.post("/transfer", async (req, res) => {
+app.post("/transfer", budgetCodeMiddleware, async (req, res) => {
   const { sourceId, destId, amount, month } = req.body;
   if (!sourceId || !destId || !amount || !month)
     return res.status(400).send("Missing data");
