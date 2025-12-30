@@ -6,10 +6,25 @@ const app = express();
 app.use(express.json());
 
 // --- CORS Setup ---
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://imjangoluan8.github.io",
+];
+
 app.use(
   cors({
-    origin: "https://imjangoluan8.github.io", // your frontend
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    origin: function (origin, callback) {
+      // allow requests with no origin (Postman, curl)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      } else {
+        return callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "x-budget-code"],
   })
 );
