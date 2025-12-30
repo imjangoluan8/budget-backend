@@ -1,9 +1,18 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+
 const app = express();
 app.use(express.json());
-app.use(cors());
+
+// --- CORS Setup ---
+app.use(
+  cors({
+    origin: "https://imjangoluan8.github.io", // your frontend
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "x-budget-code"],
+  })
+);
 
 mongoose
   .connect(process.env.MONGO_URI)
@@ -14,7 +23,7 @@ console.log("Node version:", process.version);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// Schemas
+// --- Schemas ---
 const bankSchema = new mongoose.Schema({
   name: String,
   balance: Number,
@@ -29,12 +38,20 @@ const transactionSchema = new mongoose.Schema({
   bankId: { type: mongoose.Schema.Types.ObjectId, ref: "Bank" },
   sourceName: String,
   destName: String,
-  isLedger: { type: Boolean, default: false }, // for non-primary banks
+  isLedger: { type: Boolean, default: false },
   budgetCode: { type: String, required: true },
 });
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
-// Ensure default bank
+// --- Middleware to require budgetCode ---
+function budgetCodeMiddleware(req, res, next) {
+  const code = req.headers["x-budget-code"];
+  if (!code) return res.status(400).send("Budget code required");
+  req.budgetCode = code;
+  next();
+}
+
+// --- Ensure default bank per budgetCode ---
 async function ensureDefaultBank(code) {
   let bank = await Bank.findOne({
     name: "Payroll Bank(RBANK)",
@@ -51,18 +68,13 @@ async function ensureDefaultBank(code) {
   return bank;
 }
 
-function budgetCodeMiddleware(req, res, next) {
-  const code = req.headers["x-budget-code"];
-  if (!code) return res.status(400).send("Budget code required");
-  req.budgetCode = code;
-  next();
-}
+// --- Routes ---
 
-// Routes
+// Get all banks for this budgetCode
 app.get("/banks", budgetCodeMiddleware, async (req, res) => {
   try {
-    await ensureDefaultBank();
-    const banks = await Bank.find();
+    await ensureDefaultBank(req.budgetCode);
+    const banks = await Bank.find({ budgetCode: req.budgetCode });
     res.json(banks);
   } catch (err) {
     console.error(err);
@@ -70,35 +82,44 @@ app.get("/banks", budgetCodeMiddleware, async (req, res) => {
   }
 });
 
+// Add a bank
 app.post("/banks", budgetCodeMiddleware, async (req, res) => {
   const { name, balance } = req.body;
   if (name === "Payroll Bank(RBANK)")
     return res.status(400).send("Default bank already exists");
-  const bank = new Bank({ name, balance });
+
+  const bank = new Bank({ name, balance, budgetCode: req.budgetCode });
   await bank.save();
   res.json(bank);
 });
 
+// Delete a bank
 app.delete("/banks/:id", budgetCodeMiddleware, async (req, res) => {
   const bank = await Bank.findById(req.params.id);
+  if (!bank) return res.status(404).send("Bank not found");
   if (bank.name === "Payroll Bank(RBANK)")
     return res.status(400).send("Cannot delete default bank");
   await Bank.findByIdAndDelete(req.params.id);
   res.send("Deleted");
 });
 
-// Transactions
+// Get transactions for this budgetCode
 app.get("/transactions", budgetCodeMiddleware, async (req, res) => {
-  await ensureDefaultBank();
-  const transactions = await Transaction.find().populate("bankId", "name");
+  await ensureDefaultBank(req.budgetCode);
+  const transactions = await Transaction.find({
+    budgetCode: req.budgetCode,
+  }).populate("bankId", "name");
   res.json(transactions);
 });
 
+// Add transaction
 app.post("/transactions", budgetCodeMiddleware, async (req, res) => {
   const { type, amount, month, bankId, isLedger, sourceName, destName } =
     req.body;
 
-  const bank = bankId ? await Bank.findById(bankId) : await ensureDefaultBank();
+  const bank = bankId
+    ? await Bank.findOne({ _id: bankId, budgetCode: req.budgetCode })
+    : await ensureDefaultBank(req.budgetCode);
 
   if (!bank) return res.status(404).send("Bank not found");
 
@@ -110,6 +131,7 @@ app.post("/transactions", budgetCodeMiddleware, async (req, res) => {
     isLedger: !!isLedger,
     sourceName,
     destName,
+    budgetCode: req.budgetCode,
   });
 
   await transaction.save();
@@ -121,9 +143,12 @@ app.post("/transactions", budgetCodeMiddleware, async (req, res) => {
   res.json(transaction);
 });
 
+// Delete transaction
 app.delete("/transactions/:id", budgetCodeMiddleware, async (req, res) => {
   const transaction = await Transaction.findById(req.params.id);
   if (!transaction) return res.status(404).send("Not found");
+  if (transaction.budgetCode !== req.budgetCode)
+    return res.status(403).send("Forbidden");
 
   const bank = await Bank.findById(transaction.bankId);
   bank.balance +=
@@ -136,7 +161,7 @@ app.delete("/transactions/:id", budgetCodeMiddleware, async (req, res) => {
 
 // Monthly summary
 app.get("/summary", budgetCodeMiddleware, async (req, res) => {
-  const transactions = await Transaction.find();
+  const transactions = await Transaction.find({ budgetCode: req.budgetCode });
   const summaryMap = {};
 
   transactions.forEach((t) => {
@@ -150,30 +175,35 @@ app.get("/summary", budgetCodeMiddleware, async (req, res) => {
 
   const summary = Object.keys(summaryMap)
     .sort()
-    .map((month) => ({
-      month,
-      ...summaryMap[month],
-    }));
+    .map((month) => ({ month, ...summaryMap[month] }));
 
   res.json(summary);
 });
 
+// Update bank balance
 app.patch("/banks/:id", budgetCodeMiddleware, async (req, res) => {
   const { balance } = req.body;
-  const bank = await Bank.findById(req.params.id);
+  const bank = await Bank.findOne({
+    _id: req.params.id,
+    budgetCode: req.budgetCode,
+  });
   if (!bank) return res.status(404).send("Bank not found");
   bank.balance = balance;
   await bank.save();
   res.json(bank);
 });
 
+// Transfer between banks
 app.post("/transfer", budgetCodeMiddleware, async (req, res) => {
   const { sourceId, destId, amount, month } = req.body;
   if (!sourceId || !destId || !amount || !month)
     return res.status(400).send("Missing data");
 
-  const source = await Bank.findById(sourceId);
-  const dest = await Bank.findById(destId);
+  const source = await Bank.findOne({
+    _id: sourceId,
+    budgetCode: req.budgetCode,
+  });
+  const dest = await Bank.findOne({ _id: destId, budgetCode: req.budgetCode });
   if (!source || !dest) return res.status(404).send("Bank not found");
   if (amount > source.balance)
     return res.status(400).send("Insufficient balance");
@@ -184,7 +214,7 @@ app.post("/transfer", budgetCodeMiddleware, async (req, res) => {
   await source.save();
   await dest.save();
 
-  // Create two transactions
+  // Create transactions
   const transactionsToCreate = [
     {
       type: "expense",
@@ -194,6 +224,7 @@ app.post("/transfer", budgetCodeMiddleware, async (req, res) => {
       sourceName: source.name,
       destName: dest.name,
       isLedger: source.name !== "Payroll Bank(RBANK)",
+      budgetCode: req.budgetCode,
     },
     {
       type: "income",
@@ -203,6 +234,7 @@ app.post("/transfer", budgetCodeMiddleware, async (req, res) => {
       sourceName: source.name,
       destName: dest.name,
       isLedger: dest.name !== "Payroll Bank(RBANK)",
+      budgetCode: req.budgetCode,
     },
   ];
 
