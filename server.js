@@ -88,7 +88,7 @@ app.post("/banks", budgetCodeMiddleware, async (req, res) => {
   if (name === "Payroll Bank(RBANK)")
     return res.status(400).send("Default bank already exists");
 
-  const bank = new Bank({ name, balance, budgetCode: req.budgetCode });
+  const bank = new Bank({ name, balance: 0, budgetCode: req.budgetCode });
   await bank.save();
   res.json(bank);
 });
