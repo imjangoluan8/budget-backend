@@ -31,19 +31,28 @@ const Transaction = mongoose.model("Transaction", transactionSchema);
 
 // Ensure default bank
 async function ensureDefaultBank() {
-  let bank = await Bank.findOne({ name: "Payroll Bank(RBANK)" });
-  if (!bank) {
-    bank = new Bank({ name: "Payroll Bank(RBANK)", balance: 0 });
-    await bank.save();
+  try {
+    let bank = await Bank.findOne({ name: "Payroll Bank(RBANK)" });
+    if (!bank) {
+      bank = new Bank({ name: "Payroll Bank(RBANK)", balance: 0 });
+      await bank.save();
+    }
+    return bank;
+  } catch (err) {
+    console.error("Error ensuring default bank:", err);
+    return null;
   }
-  return bank;
 }
-ensureDefaultBank();
 
 // Routes
 app.get("/banks", async (req, res) => {
-  const banks = await Bank.find();
-  res.json(banks);
+  try {
+    const banks = await Bank.find();
+    res.json(banks);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Server error");
+  }
 });
 
 app.post("/banks", async (req, res) => {
